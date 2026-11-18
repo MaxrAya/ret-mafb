@@ -102,6 +102,7 @@ class Match(Base):
     resume_phase: Mapped[str | None] = mapped_column(String(16), nullable=True)
     clown_win: Mapped[int] = mapped_column(Integer, default=0)
     pending_hunter_seat: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    progress_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -123,6 +124,7 @@ class MatchPlayer(Base):
     won: Mapped[int] = mapped_column(Integer, default=0)
     night_msg_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     self_heal_used: Mapped[int] = mapped_column(Integer, default=0)
+    rating_delta: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class Vote(Base):
@@ -190,3 +192,10 @@ class ChatGif(Base):
     chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     kind: Mapped[str] = mapped_column(String(16), primary_key=True)  # start|night|day|vote|end
     file_id: Mapped[str] = mapped_column(String(255))
+
+
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

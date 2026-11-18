@@ -126,7 +126,7 @@ def morning_body(day: int, name: str, role: Role) -> str:
     info = ROLE_INFO[role]
     return (
         f"☀️ Утро дня {day}. Находят тело: <b>{_e(name)}</b>.\n"
-        f"Его роль: {info.emoji} {info.name}."
+        f"Роль: {info.emoji} {info.name}."
     )
 
 
@@ -134,7 +134,7 @@ def lynch_result(name: str, role: Role) -> str:
     info = ROLE_INFO[role]
     return (
         f"⚖️ Голосование завершено. Город казнит <b>{_e(name)}</b>.\n"
-        f"Его роль: {info.emoji} {info.name}."
+        f"Роль: {info.emoji} {info.name}."
     )
 
 
@@ -147,7 +147,7 @@ def lynch_none(day: int, top_count: int, alive: int) -> str:
 
 def hunter_prompt(day: int, dead_name: str) -> str:
     return (
-        f"🔫 <b>Охотник погиб!</b> {_e(dead_name)} должен выстрелить в ответ.\n"
+        f"🔫 <b>Охотник погиб!</b> {_e(dead_name)} может выстрелить в ответ.\n"
         "Выберите цель (кнопка) или пропустите выстрел."
     )
 
@@ -159,13 +159,13 @@ def hunter_group_prompt(dead_name: str) -> str:
 def hunter_shot(shooter: str, target: str, role: Role) -> str:
     info = ROLE_INFO[role]
     return (
-        f"🔫 {_e(shooter)} выстрелил в <b>{_e(target)}</b>.\n"
+        f"🔫 {_e(shooter)}: выстрел в <b>{_e(target)}</b>.\n"
         f"Жертва: {info.emoji} {info.name}."
     )
 
 
 def hunter_no_shot(shooter: str) -> str:
-    return f"🔫 {_e(shooter)} решил не стрелять."
+    return f"🔫 {_e(shooter)} пропускает выстрел."
 
 
 def end_message(
@@ -177,6 +177,6 @@ def end_message(
     rows = []
     for name, role_key, alive in reveal:
         info = ROLE_INFO[Role(role_key)]
-        status = "жив" if alive else "мёртв"
-        rows.append(f"{info.emoji} {_e(name)} — {info.name} ({status})")
+        status = "✅" if alive else "💀"
+        rows.append(f"{info.emoji} {_e(name)} — {info.name} {status}")
     return f"<b>{title}</b>\n\nВсе роли:\n" + "\n".join(rows)

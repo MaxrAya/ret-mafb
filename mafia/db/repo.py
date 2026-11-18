@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mafia.db.models import (
@@ -15,6 +16,7 @@ from mafia.db.models import (
     MatchPlayer,
     NightAction,
     PlayerStats,
+    Subscription,
     Tournament,
     TournamentPlayer,
     User,
@@ -176,6 +178,7 @@ async def save_state(session: AsyncSession, state: GameState) -> None:
     match.resume_phase = state.resume_phase.value if state.resume_phase else None
     match.clown_win = 1 if state.clown_win else 0
     match.pending_hunter_seat = state.pending_hunter_seat
+    match.progress_json = json.dumps(state.progress)
     if state.phase == Phase.ENDED:
         match.status = "finished"
         match.ended_at = utcnow()
@@ -196,7 +199,7 @@ async def save_state(session: AsyncSession, state: GameState) -> None:
         row.self_heal_used = 1 if p.self_heal_used else 0
 
     await session.execute(
-        delete(Vote).where(Vote.match_id == state.match_id, Vote.day == state.day)
+        delete(Vote).where(Vote.match_id == state.match_id, Vote.day <= state.day)
     )
     for voter, target in state.votes.items():
         session.add(
@@ -205,7 +208,7 @@ async def save_state(session: AsyncSession, state: GameState) -> None:
 
     await session.execute(
         delete(NightAction).where(
-            NightAction.match_id == state.match_id, NightAction.day == state.day
+            NightAction.match_id == state.match_id, NightAction.day <= state.day
         )
     )
     for actor, target in state.night.items():
@@ -272,6 +275,11 @@ async def load_state(session: AsyncSession, match_id: int) -> GameState | None:
         clown_win=bool(match.clown_win),
         pending_hunter_seat=match.pending_hunter_seat,
     )
+    try:
+        raw_progress = json.loads(match.progress_json or "{}")
+    except ValueError:
+        raw_progress = {}
+    state.progress = {int(k): dict(v) for k, v in raw_progress.items()}
 
     vote_rows = (
         await session.execute(select(Vote).where(Vote.match_id == match_id, Vote.day == state.day))
@@ -438,3 +446,53 @@ async def set_gif(session: AsyncSession, chat_id: int, kind: str, file_id: str) 
         session.add(ChatGif(chat_id=chat_id, kind=kind, file_id=file_id))
     else:
         row.file_id = file_id
+
+
+# ---------- subscriptions ----------
+
+
+async def add_sub(session: AsyncSession, user_id: int) -> None:
+    row = await session.get(Subscription, user_id)
+    if row is None:
+        session.add(Subscription(user_id=user_id))
+
+
+async def del_sub(session: AsyncSession, user_id: int) -> None:
+    await session.execute(delete(Subscription).where(Subscription.user_id == user_id))
+
+
+async def all_subs(session: AsyncSession) -> list[int]:
+    rows = (await session.execute(select(Subscription.user_id))).scalars()
+    return list(rows)
+
+
+async def is_sub(session: AsyncSession, user_id: int) -> bool:
+    row = await session.get(Subscription, user_id)
+    return row is not None
+
+
+# ---------- period top ----------
+
+
+async def top_period(
+    session: AsyncSession, since: datetime | None, limit: int = 10
+) -> list[tuple[int, int, int]]:
+    """[(user_id, rating_delta_sum, games)] за период, только рейтинговые партии."""
+    stmt = (
+        select(
+            MatchPlayer.user_id,
+            func.sum(MatchPlayer.rating_delta),
+            func.count(),
+        )
+        .join(Match, Match.id == MatchPlayer.match_id)
+        .where(Match.status == "finished", Match.rated == 1)
+    )
+    if since is not None:
+        stmt = stmt.where(Match.ended_at >= since)
+    stmt = (
+        stmt.group_by(MatchPlayer.user_id)
+        .order_by(func.sum(MatchPlayer.rating_delta).desc())
+        .limit(limit)
+    )
+    rows = (await session.execute(stmt)).all()
+    return [(r[0], int(r[1] or 0), int(r[2])) for r in rows]

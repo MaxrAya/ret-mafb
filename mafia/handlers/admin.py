@@ -181,7 +181,7 @@ async def cmd_forcend(msg: Message, command: CommandObject, runner: Runner) -> N
         winner = engine.current_winner(state)
         if winner is None:
             await msg.answer(
-                "Победитель не определился (равные силы). Укажи явно:\n"
+                "Победитель не определился (равные силы). Укажите явно:\n"
                 "/forcend town или /forcend mafia"
             )
             return

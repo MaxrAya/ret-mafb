@@ -176,22 +176,22 @@ def _night_prompts(state: GameState, now_ts: int) -> list[Effect]:
     state.phase = Phase.NIGHT
     state.deadline_ts = now_ts + state.settings.night_s
     effects: list[Effect] = [SendGroup(T.night_banner(state.day), tag="night_banner")]
-    warns: list[str] = []
+    # list every offline player regardless of role, so the warn cannot leak roles
+    offline: list[str] = []
     for p in state.alive():
         effects.append(Mute(p.user_id))
+        if not p.pm_ok:
+            offline.append(f"• {html.escape(p.name)} — нет доступа в ЛС")
+            continue
         prompt = night_prompt_for(state, p)
         if prompt is None:
             continue
         text, kb = prompt
-        if not p.pm_ok:
-            warns.append(f"• {html.escape(p.name)} — нет доступа в ЛС")
-            continue
         effects.append(SendPM(p.user_id, text, kb, role_prompt=True))
-    if warns:
+    if offline:
         effects.append(
             SendGroup(
-                "⚠️ Эти игроки не смогут действовать ночью:\n"
-                + "\n".join(warns)
+                "⚠️ Эти игроки не смогут действовать ночью:\n" + "\n".join(offline)
             )
         )
     return effects
@@ -387,7 +387,13 @@ def _end(state: GameState, winner: str) -> list[Effect]:
     state.phase = Phase.ENDED
     state.deadline_ts = None
     reveal = [(p.name, str(p.role or ""), p.alive) for p in state.players]
-    effects: list[Effect] = [SendGroup(T.end_message(winner, reveal), tag="end")]
+    effects: list[Effect] = [
+        SendGroup(
+            T.end_message(winner, reveal),
+            tag="end",
+            kb=("rematch", str(state.match_id)),
+        )
+    ]
     for p in state.players:
         effects.append(Unmute(p.user_id))
     return effects

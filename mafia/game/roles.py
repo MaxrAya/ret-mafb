@@ -51,7 +51,7 @@ ROLE_INFO: dict[Role, RoleInfo] = {
     ),
     Role.SHERIFF: RoleInfo(
         "Шериф", Team.TOWN, "🔍",
-        "Каждую ночь проверяйте одного игрока: мафия он или нет.",
+        "Каждую ночь проверяйте одного игрока: мафия этот игрок или нет.",
     ),
     Role.DOCTOR: RoleInfo(
         "Доктор", Team.TOWN, "💊",

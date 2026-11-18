@@ -6,7 +6,12 @@ import sys
 
 from aiogram import BaseMiddleware, Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
-from aiogram.types import BotCommand, TelegramObject
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeDefault,
+    TelegramObject,
+)
 
 from mafia.config import get_settings
 from mafia.db import repo
@@ -67,20 +72,27 @@ async def main() -> None:
         sys.exit(1)
     log.info("Bot started as @%s", me.username)
 
-    await bot.set_my_commands(
-        [
-            BotCommand(command="mafia", description="создать лобби"),
-            BotCommand(command="game", description="состояние партии"),
-            BotCommand(command="skip", description="пропустить фазу (хост)"),
-            BotCommand(command="profile", description="ваша статистика"),
-            BotCommand(command="top", description="рейтинг"),
-            BotCommand(command="achievements", description="достижения"),
-            BotCommand(command="matches", description="последние партии"),
-            BotCommand(command="tournament", description="турниры"),
-            BotCommand(command="rules", description="правила"),
-            BotCommand(command="help", description="помощь"),
-        ]
-    )
+    commands = [
+        BotCommand(command="start", description="начать и справка"),
+        BotCommand(command="mafia", description="создать лобби"),
+        BotCommand(command="game", description="состояние партии"),
+        BotCommand(command="skip", description="пропустить фазу (хост)"),
+        BotCommand(command="profile", description="ваша статистика"),
+        BotCommand(command="top", description="рейтинг"),
+        BotCommand(command="achievements", description="достижения"),
+        BotCommand(command="matches", description="последние партии"),
+        BotCommand(command="tournament", description="турниры"),
+        BotCommand(command="help", description="все команды"),
+        BotCommand(command="rules", description="правила игры"),
+        BotCommand(command="subscribe", description="уведомления о сборах в ЛС"),
+        BotCommand(command="unsubscribe", description="выключить уведомления"),
+        BotCommand(command="setgif", description="гифка фазы (админ)"),
+        BotCommand(command="forcend", description="завершить партию (админ)"),
+    ]
+    for scope in (BotCommandScopeDefault(), BotCommandScopeAllGroupChats()):
+        await bot.set_my_commands(commands, scope=scope)
+    stored = await bot.get_my_commands()
+    log.info("Commands registered: %d", len(stored))
 
     scheduler_task = asyncio.create_task(run_scheduler(runner, settings))
     try:

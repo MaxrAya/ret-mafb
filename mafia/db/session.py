@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -37,6 +38,21 @@ async def create_schema() -> None:
         raise RuntimeError("DB not initialised")
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_ensure_columns)
+
+
+def _ensure_columns(sync_conn: Any) -> None:
+    """Lightweight migration: add columns created after the first release."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(sync_conn)
+    if "matches" not in inspector.get_table_names():
+        return
+    cols = {c["name"] for c in inspector.get_columns("matches")}
+    if "progress_json" not in cols:
+        sync_conn.execute(
+            text("ALTER TABLE matches ADD COLUMN progress_json TEXT NOT NULL DEFAULT '{}'")
+        )
 
 
 async def dispose_db() -> None:

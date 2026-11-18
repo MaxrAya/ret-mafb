@@ -63,16 +63,20 @@ def settings_kb(s: GameSettings) -> InlineKeyboardMarkup:
     on = "✅"
     off = "❌"
 
-    def tog(key: str, label: str, active: bool) -> None:
-        mark = on if active else off
-        kb.add(
-            InlineKeyboardButton(text=f"{mark} {label}", callback_data=f"st:tg:{key}")
+    def tog2(key1: str, label1: str, act1: bool, key2: str, label2: str, act2: bool) -> None:
+        kb.row(
+            InlineKeyboardButton(
+                text=f"{on if act1 else off} {label1}", callback_data=f"st:tg:{key1}"
+            ),
+            InlineKeyboardButton(
+                text=f"{on if act2 else off} {label2}", callback_data=f"st:tg:{key2}"
+            ),
         )
 
     def adj(label: str, key: str, value: int) -> None:
         kb.row(
             InlineKeyboardButton(text=f"− {label}", callback_data=f"st:adjm:{key}"),
-            InlineKeyboardButton(text=f"{value}", callback_data="st:noop"),
+            InlineKeyboardButton(text=str(value), callback_data="st:noop"),
             InlineKeyboardButton(text="+", callback_data=f"st:adj:{key}"),
         )
 
@@ -81,18 +85,17 @@ def settings_kb(s: GameSettings) -> InlineKeyboardMarkup:
     adj("Обсуждение, с", "discuss", s.discuss_s)
     adj("Голосование, с", "vote", s.vote_s)
     adj("Ночь, с", "night", s.night_s)
-    tog("rated", "Рейтинг", s.rated)
-    tog("anon", "Анонимное голосование", s.anonymous_vote)
     kb.row(
-        InlineKeyboardButton(text="———— роли ————", callback_data="st:noop"),
+        InlineKeyboardButton(text="⚡ Быстрая", callback_data="st:preset:fast"),
+        InlineKeyboardButton(text="🎲 Классика", callback_data="st:preset:classic"),
+        InlineKeyboardButton(text="🐢 Длинная", callback_data="st:preset:long"),
     )
-    tog("don", "Дон", s.use_don)
-    tog("godfather", "Сильный мафиози", s.use_godfather)
-    tog("sheriff", "Шериф", s.use_sheriff)
-    tog("doctor", "Доктор", s.use_doctor)
-    tog("clown", "Клоун", s.use_clown)
-    tog("hunter", "Охотник", s.use_hunter)
-    kb.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="st:back"))
+    tog2("rated", "Рейтинг", s.rated, "anon", "Анонимность", s.anonymous_vote)
+    kb.row(InlineKeyboardButton(text="🎭 Роли", callback_data="st:noop"))
+    tog2("don", "Дон", s.use_don, "godfather", "Сильный мафиози", s.use_godfather)
+    tog2("sheriff", "Шериф", s.use_sheriff, "doctor", "Доктор", s.use_doctor)
+    tog2("clown", "Клоун", s.use_clown, "hunter", "Охотник", s.use_hunter)
+    kb.row(InlineKeyboardButton(text="⬅️ Готово", callback_data="st:back"))
     return kb.as_markup()
 
 
@@ -173,3 +176,14 @@ def tournament_kb(can_start: bool) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🏁 Начать турнир", callback_data="tr:start")
         )
     return _rows(buttons, 2)
+
+
+def rematch_kb(match_id: int) -> InlineKeyboardMarkup:
+    return _rows(
+        [
+            InlineKeyboardButton(
+                text="🔁 Ещё партия", callback_data=f"rm:{match_id}"
+            )
+        ],
+        1,
+    )

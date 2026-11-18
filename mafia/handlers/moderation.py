@@ -27,6 +27,18 @@ MEDIA_TYPES = {
     "audio",
 }
 
+BAD_STEMS = (
+    "хуй", "хуя", "хуе", "хую", "пизд", "бляд", "блят", "заеб",
+    "ебан", "ебл", "выеб", "мудак", "мудац", "говн",
+    "дерьм", "шлюх", "сука", "суки", "сукой", "сучк", "пидор", "пидар",
+    "дроч", "сосат", "жоп", "нахуй", "похуй",
+)
+
+
+def has_profanity(text: str) -> bool:
+    t = text.lower().replace("ё", "е")
+    return any(stem in t for stem in BAD_STEMS)
+
 _cool: dict[tuple[int, str], float] = {}
 
 
@@ -62,6 +74,15 @@ async def moderate(msg: Message) -> None:
     is_media = msg.content_type in MEDIA_TYPES
     settings = get_settings()
 
+    if is_cmd:
+        return
+
+    if text and has_profanity(text):
+        await _drop(msg)
+        if _allow(msg.chat.id, "prof", settings.media_warn_cooldown_s):
+            await _warn(msg, "🚫 Мат и оскорбления здесь запрещены.")
+        return
+
     async with session_scope() as session:
         mid = await repo.active_match_in_chat(session, msg.chat.id)
         if mid is None:
@@ -74,9 +95,6 @@ async def moderate(msg: Message) -> None:
         await _drop(msg)
         if _allow(msg.chat.id, "media", settings.media_warn_cooldown_s):
             await _warn(msg, "🚫 Медиа, фото и скриншоты во время партии запрещены.")
-        return
-
-    if is_cmd:
         return
 
     if state.phase == Phase.NIGHT:

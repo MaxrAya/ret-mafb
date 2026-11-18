@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import time
 
@@ -33,6 +34,12 @@ TOGGLES = {
     "doctor": ("use_doctor", "Доктор"),
     "clown": ("use_clown", "Клоун"),
     "hunter": ("use_hunter", "Охотник"),
+}
+
+PRESETS: dict[str, dict[str, int]] = {
+    "fast": {"min_players": 4, "max_players": 10, "discuss_s": 30, "vote_s": 30, "night_s": 30},
+    "classic": {"min_players": 5, "max_players": 15, "discuss_s": 120, "vote_s": 90, "night_s": 60},
+    "long": {"min_players": 7, "max_players": 20, "discuss_s": 180, "vote_s": 120, "night_s": 90},
 }
 
 
@@ -80,8 +87,8 @@ def lobby_text(
         f"голосование {s.vote_s}с · ночь {s.night_s}с"
     )
     flags = []
-    flags.append("рейтинг вкл" if s.rated else "рейтинг выкл")
-    flags.append("анонимное голосование" if s.anonymous_vote else "открытое голосование")
+    flags.append("⭐ рейтинг" if s.rated else "без рейтинга")
+    flags.append("🙈 аноним" if s.anonymous_vote else "открытые голоса")
     roles = ["дон" if s.use_don else "", "сил. мафиози" if s.use_godfather else "",
              "шериф" if s.use_sheriff else "", "доктор" if s.use_doctor else "",
              "клоун" if s.use_clown else "",              "охотник" if s.use_hunter else ""]
@@ -93,14 +100,26 @@ def lobby_text(
 
 
 def settings_text(s: GameSettings) -> str:
+    roles_on = sum(
+        [
+            s.use_don,
+            s.use_godfather,
+            s.use_sheriff,
+            s.use_doctor,
+            s.use_clown,
+            s.use_hunter,
+        ]
+    )
     return (
         "⚙️ <b>Настройки лобби</b>\n\n"
-        f"Игроков: от {s.min_players} до {s.max_players}\n"
-        f"Обсуждение: {s.discuss_s}с · Голосование: {s.vote_s}с · Ночь: {s.night_s}с\n"
-        f"Рейтинг: {'вкл' if s.rated else 'выкл'} · "
-        f"Голосование: {'анонимное' if s.anonymous_vote else 'открытое'}\n\n"
-        "✅/❌ — включить или выключить роль.\n"
-        "Кнопки −/+ меняют время."
+        f"👥 Игроков: {s.min_players}–{s.max_players} · "
+        f"⏱ обсуждение {s.discuss_s}с · голосование {s.vote_s}с · ночь {s.night_s}с\n"
+        f"⭐ Рейтинг: {'вкл' if s.rated else 'выкл'} · "
+        f"🙈 Анонимность: {'вкл' if s.anonymous_vote else 'выкл'}\n"
+        f"🎭 Ролей включено: {roles_on}/6\n\n"
+        "Кнопки −/+ меняют значение.\n"
+        "✅ — включить, ❌ — выключить роль.\n"
+        "Пресеты — быстрый набор настроек."
     )
 
 
@@ -145,6 +164,24 @@ async def _refresh(bot, chat_id: int, viewer_id: int) -> None:
 # ---------- command ----------
 
 
+async def _notify_subs(msg: Message) -> None:
+    async with session_scope() as session:
+        subs = await repo.all_subs(session)
+    if not subs:
+        return
+    title = msg.chat.title or msg.chat.full_name or "группа"
+    text = f"📢 В чате «{esc(title)}» собирают партию! Открой бота и жми /mafia"
+    sender = msg.from_user.id if msg.from_user else 0
+    for uid in subs:
+        if uid == sender:
+            continue
+        try:
+            await msg.bot.send_message(uid, text)
+        except TelegramAPIError:
+            continue
+        await asyncio.sleep(0.05)
+
+
 @router.message(Command("mafia"))
 async def cmd_mafia(msg: Message, runner: Runner) -> None:
     if msg.chat.type not in ("group", "supergroup"):
@@ -170,6 +207,7 @@ async def cmd_mafia(msg: Message, runner: Runner) -> None:
                 return
             attach_id = tournament.id
         lobby = await repo.get_lobby(session, chat_id)
+        created_new = lobby is None
         if lobby is None:
             settings = GameSettings()
             lobby = await repo.create_lobby(
@@ -195,6 +233,8 @@ async def cmd_mafia(msg: Message, runner: Runner) -> None:
         markup = kb.lobby_kb(has_host=True) if is_host else kb.lobby_kb(has_host=False)
         sent = await msg.answer(text, parse_mode="HTML", reply_markup=markup)
         lobby.msg_id = sent.message_id
+    if created_new:
+        await _notify_subs(msg)
 
 
 # ---------- callbacks ----------
@@ -445,3 +485,75 @@ async def st_adj(cb: CallbackQuery) -> None:
 @router.callback_query(lambda c: c.data and c.data.startswith("st:adjm:"))
 async def st_adjm(cb: CallbackQuery) -> None:
     await _adjust(cb, cb.data.split(":")[2], -1)
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("st:preset:"))
+async def st_preset(cb: CallbackQuery) -> None:
+    assert cb.from_user and cb.message and cb.data
+    key = cb.data.split(":")[2]
+    if key not in PRESETS:
+        await cb.answer("Неизвестный пресет", show_alert=True)
+        return
+    chat_id = cb.message.chat.id
+    async with session_scope() as session:
+        lobby = await repo.get_lobby(session, chat_id)
+        if lobby is None:
+            await cb.answer("Лобби закрыто", show_alert=True)
+            return
+        if lobby.host_id != cb.from_user.id:
+            await cb.answer("Только хост", show_alert=True)
+            return
+        settings = GameSettings.from_json(lobby.settings_json)
+        for attr, value in PRESETS[key].items():
+            setattr(settings, attr, value)
+        lobby.settings_json = settings.to_json()
+        msg_id = lobby.msg_id or 0
+    await cb.answer("Пресет применён")
+    await _settings_view(cb, settings, msg_id)
+
+
+# ---------- rematch ----------
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("rm:"))
+async def cb_rematch(cb: CallbackQuery, runner: Runner) -> None:
+    assert cb.from_user and cb.message and cb.data
+    old_id = int(cb.data.split(":")[1])
+    chat_id = cb.message.chat.id
+    async with session_scope() as session:
+        match = await repo.get_match(session, old_id)
+        if match is None or match.chat_id != chat_id:
+            await cb.answer("Партия не найдена", show_alert=True)
+            return
+        if match.status != "finished":
+            await cb.answer("Эта партия уже закрыта", show_alert=True)
+            return
+        if match.tournament_id is not None:
+            await cb.answer("Турнир: новая партия через /mafia", show_alert=True)
+            return
+        if cb.from_user.id != match.host_id:
+            await cb.answer("Только хост может начать реванш", show_alert=True)
+            return
+        if await repo.active_match_in_chat(session, chat_id):
+            await cb.answer("Партия уже идёт", show_alert=True)
+            return
+        if await repo.get_lobby(session, chat_id):
+            await cb.answer("Лобби уже открыто: /mafia", show_alert=True)
+            return
+        rows = await repo.match_players(session, old_id)
+        for pr in rows:
+            if await repo.user_in_active_match(session, pr.user_id):
+                await cb.answer(
+                    "Кто-то из игроков уже в другой партии", show_alert=True
+                )
+                return
+        settings = GameSettings.from_json(match.settings_json)
+        raw = [(pr.user_id, pr.name) for pr in rows]
+        host_id = match.host_id
+        rated = bool(match.rated)
+    try:
+        await runner.start_game(chat_id, host_id, raw, settings, rated, None)
+    except RolePoolError as e:
+        await cb.answer(str(e), show_alert=True)
+        return
+    await cb.answer("Реванш! Состав тот же — партия пошла.")

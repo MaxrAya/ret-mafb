@@ -411,3 +411,51 @@ def test_roleless_player_cannot_act():
     st.by_seat(1).role = None
     with pytest.raises(EngineError):
         night_pick(st, 1, 2, 0)
+
+
+# ---------------------------------------------------------------- rematch kb
+
+
+def test_end_carries_rematch_kb():
+    st = make_state([Role.CITIZEN] * 5 + [Role.MAFIA])
+    fx = E.admin_force_end(st, "town")
+    assert st.phase == Phase.ENDED
+    assert st.winner == "town"
+    sends = [f for f in fx if isinstance(f, SendGroup)]
+    assert sends and sends[0].kb == ("rematch", "1")
+    unmutes = [f for f in fx if type(f).__name__ == "Unmute"]
+    assert len(unmutes) == 6
+
+
+# ---------------------------------------------------------------- night prompts
+
+
+def test_night_warn_includes_offline_citizen():
+    # seat 1 = sheriff (night role), seat 2 = citizen (no night role)
+    st = make_state([Role.SHERIFF, Role.CITIZEN, Role.CITIZEN, Role.MAFIA, Role.CITIZEN])
+    st.by_seat(1).pm_ok = False
+    st.by_seat(2).pm_ok = False
+    effects = E._night_prompts(st, 0)
+    warns = [
+        e for e in effects
+        if isinstance(e, SendGroup) and "не смогут действовать ночью" in e.text
+    ]
+    assert len(warns) == 1
+    # citizen is listed: the warn cannot be used to read night roles
+    assert "P1" in warns[0].text
+    assert "P2" in warns[0].text
+    # online players are not listed
+    assert "P3" not in warns[0].text
+    # offline players get no night prompt at all
+    pm_users = {e.user_id for e in effects if isinstance(e, SendPM)}
+    assert 100 not in pm_users
+    assert 101 not in pm_users
+    assert 103 in pm_users  # online mafia still gets the prompt
+
+
+def test_night_prompts_state_transitions():
+    st = make_state([Role.CITIZEN] * 5 + [Role.MAFIA])
+    effects = E._night_prompts(st, 100)
+    assert st.phase == Phase.NIGHT
+    assert st.deadline_ts == 100 + st.settings.night_s
+    assert sum(1 for e in effects if type(e).__name__ == "Mute") == 6

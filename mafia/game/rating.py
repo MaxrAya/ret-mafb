@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 K_FACTOR = 32
-SOLO_WIN = 24
 RATING_FLOOR = 0
 
 
@@ -20,7 +19,9 @@ def compute_deltas(
 ) -> dict[int, int]:
     """ratings: user_id -> rating; teams: user_id -> town|mafia|solo.
 
-    Returns user_id -> delta (0-sum per side, solo is handled separately).
+    Returns user_id -> delta. Sum of deltas is always exactly 0:
+    losers are clipped at RATING_FLOOR, winners are scaled down so the
+    total gain equals the total loss actually collected.
     """
     deltas: dict[int, int] = {uid: 0 for uid in ratings}
     town = [uid for uid, t in teams.items() if t == "town"]
@@ -28,23 +29,21 @@ def compute_deltas(
     solo = [uid for uid, t in teams.items() if t == "solo"]
 
     if winner == "solo":
-        for uid in solo:
-            deltas[uid] = SOLO_WIN
-        others = [uid for uid in ratings if uid not in solo]
-        if others:
-            share = max(1, SOLO_WIN // len(others))
-            for uid in others:
-                deltas[uid] = -share
-        return _apply_floor(deltas, ratings)
-
-    if not town or not mafia:
-        return deltas
-
-    if winner == "town":
+        if not solo:
+            return deltas
+        win_side, lose_side = solo, [uid for uid in ratings if uid not in solo]
+    elif winner == "town":
+        if not town or not mafia:
+            return deltas
         win_side, lose_side = town, mafia
     elif winner == "mafia":
+        if not town or not mafia:
+            return deltas
         win_side, lose_side = mafia, town
     else:
+        return deltas
+
+    if not lose_side:
         return deltas
 
     r_win = _avg([ratings[uid] for uid in win_side])
@@ -62,14 +61,24 @@ def compute_deltas(
     for i, uid in enumerate(lose_side):
         deltas[uid] = -(base + (1 if i < rem else 0))
 
-    return _apply_floor(deltas, ratings)
+    return _zero_sum(deltas, ratings)
 
 
-def _apply_floor(deltas: dict[int, int], ratings: dict[int, int]) -> dict[int, int]:
+def _zero_sum(deltas: dict[int, int], ratings: dict[int, int]) -> dict[int, int]:
     out: dict[int, int] = {}
     for uid, d in deltas.items():
         current = ratings.get(uid, 1000)
         if current + d < RATING_FLOOR:
             d = RATING_FLOOR - current
         out[uid] = d
+    total = sum(out.values())
+    if total <= 0:
+        return out
+    # losers were clipped at the floor: scale winners down so sum == 0
+    winners = [uid for uid, d in out.items() if d > 0]
+    target = sum(out[uid] for uid in winners) - total
+    base = target // len(winners)
+    rem = target - base * len(winners)
+    for i, uid in enumerate(winners):
+        out[uid] = base + (1 if i < rem else 0)
     return out

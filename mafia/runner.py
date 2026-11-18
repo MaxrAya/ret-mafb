@@ -9,7 +9,7 @@ from collections.abc import Callable
 from typing import Any
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import ChatPermissions, InlineKeyboardMarkup
 
 from mafia.db import repo
@@ -21,13 +21,14 @@ from mafia.game.engine import (
     EditPM,
     Effect,
     GameState,
+    GPlayer,
     Mute,
     Phase,
     SendGroup,
     SendPM,
     Unmute,
 )
-from mafia.game.roles import GameSettings, Team
+from mafia.game.roles import GameSettings, Role, Team
 from mafia.ui import keyboards as kb
 from mafia.ui import texts as T
 
@@ -56,12 +57,19 @@ GIF_TAG_KIND = {
 }
 
 
+def mafia_line(sender: GPlayer, text: str) -> str:
+    label = "Дон" if sender.role == Role.DON else "Мафия"
+    return f"{label}: {html.escape(sender.name)} — {html.escape(text)}"
+
+
 class Runner:
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
         self._locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._chat_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._gifs: dict[int, dict[str, str]] = {}
+        self._mafia_lines: dict[int, tuple[int, list[str]]] = {}
+        self._mafia_msgs: dict[tuple[int, int], int] = {}
 
     def lock(self, match_id: int) -> asyncio.Lock:
         return self._locks[match_id]
@@ -147,6 +155,16 @@ class Runner:
                 state.deadline_ts = None
                 await repo.abort_match(session, match_id)
             await self._apply(state, effects)
+        self._drop_caches(match_id)
+
+    def _mafia_drop(self, match_id: int) -> None:
+        self._mafia_lines.pop(match_id, None)
+        for key in [k for k in self._mafia_msgs if k[0] == match_id]:
+            self._mafia_msgs.pop(key, None)
+
+    def _drop_caches(self, match_id: int) -> None:
+        # _locks/_chat_locks stay: popping a lock while waiters hold it races.
+        self._mafia_drop(match_id)
 
     async def relay_mafia(self, match_id: int, sender_id: int, text: str) -> None:
         async with self.lock(match_id):
@@ -157,15 +175,37 @@ class Runner:
             sender = state.by_user(sender_id)
             if sender is None or not sender.alive or sender.team != Team.MAFIA:
                 return
+            text = text.strip()
+            if not text:
+                return
+            entry = self._mafia_lines.get(match_id)
+            if entry is None or entry[0] != state.day:
+                lines: list[str] = []
+            else:
+                lines = entry[1]
+            lines.append(mafia_line(sender, text))
+            if len(lines) > 40:
+                del lines[:-40]
+            self._mafia_lines[match_id] = (state.day, lines)
+            body = "\n".join(lines)
             for mate in state.alive():
-                if mate.team != Team.MAFIA or mate.user_id == sender_id or not mate.pm_ok:
+                if mate.team != Team.MAFIA or not mate.pm_ok:
                     continue
+                key = (match_id, mate.user_id)
+                msg_id = self._mafia_msgs.get(key)
+                if msg_id is not None:
+                    try:
+                        await self.bot.edit_message_text(
+                            body,
+                            chat_id=mate.user_id,
+                            message_id=msg_id,
+                        )
+                        continue
+                    except TelegramAPIError:
+                        pass
                 try:
-                    await self.bot.send_message(
-                        mate.user_id,
-                        f"💬 <b>{html.escape(sender.name)}</b>:\n{html.escape(text)}",
-                        parse_mode="HTML",
-                    )
+                    msg = await self.bot.send_message(mate.user_id, body)
+                    self._mafia_msgs[key] = msg.message_id
                 except TelegramAPIError:
                     continue
 
@@ -192,6 +232,7 @@ class Runner:
     async def _apply(self, state: GameState, effects: list[Effect]) -> None:
         gifs = await self.gifs_for(state.chat_id)
         pm_warn: list[str] = []
+        night_pm_failed = False
         dirty = False
         for fx in effects:
             try:
@@ -200,7 +241,9 @@ class Runner:
                 elif isinstance(fx, EditGroup):
                     await self._edit_group(state, fx)
                 elif isinstance(fx, SendPM):
-                    await self._send_pm(state, fx, pm_warn)
+                    sent = await self._send_pm(state, fx, pm_warn)
+                    if not sent and fx.role_prompt:
+                        night_pm_failed = True
                     dirty = True
                 elif isinstance(fx, EditPM):
                     await self._edit_pm(state, fx)
@@ -214,6 +257,16 @@ class Runner:
             text = "⚠️ Не удалось написать в ЛС этим игрокам:\n" + "\n".join(pm_warn)
             try:
                 await self.bot.send_message(state.chat_id, text)
+            except TelegramAPIError:
+                pass
+        if night_pm_failed:
+            # no names: naming night-PM failures would leak roles
+            try:
+                await self.bot.send_message(
+                    state.chat_id,
+                    "⚠️ Не удалось написать в ЛС некоторым игрокам — "
+                    "они не смогут действовать этой ночью.",
+                )
             except TelegramAPIError:
                 pass
         if dirty:
@@ -270,19 +323,23 @@ class Runner:
                     is_caption = True
             if is_caption:
                 await self.bot.edit_message_caption(
-                    state.chat_id, fx.msg_id, caption=fx.text,
+                    caption=fx.text,
+                    chat_id=state.chat_id,
+                    message_id=fx.msg_id,
                     parse_mode="HTML", reply_markup=markup,
                 )
             else:
                 await self.bot.edit_message_text(
-                    state.chat_id, fx.msg_id, fx.text,
+                    fx.text,
+                    chat_id=state.chat_id,
+                    message_id=fx.msg_id,
                     parse_mode="HTML", reply_markup=markup,
                 )
         except TelegramBadRequest as e:
             if "message is not modified" not in str(e):
                 raise
 
-    async def _send_pm(self, state: GameState, fx: SendPM, warn: list[str]) -> None:
+    async def _send_pm(self, state: GameState, fx: SendPM, warn: list[str]) -> bool:
         player = state.by_user(fx.user_id)
         try:
             msg = await self.bot.send_message(
@@ -291,10 +348,22 @@ class Runner:
             )
             if player is not None and fx.role_prompt:
                 player.night_msg_id = msg.message_id
-        except TelegramAPIError:
+            return True
+        except TelegramForbiddenError:
+            # user blocked the bot or never started it: permanent
             if player is not None:
                 player.pm_ok = False
-                warn.append(f"• {html.escape(player.name)} — не запускал(а) бота в ЛС")
+                if not fx.role_prompt:
+                    warn.append(
+                        f"• {html.escape(player.name)} — не запускал(а) бота в ЛС"
+                    )
+            return False
+        except TelegramAPIError as e:
+            # flood/network blip: transient, keep pm_ok for the next night
+            log.warning("pm failed user=%s role_prompt=%s: %s", fx.user_id, fx.role_prompt, e)
+            if player is not None and not fx.role_prompt:
+                warn.append(f"• {html.escape(player.name)} — временная ошибка ЛС")
+            return False
 
     async def _edit_pm(self, state: GameState, fx: EditPM) -> None:
         player = state.by_user(fx.user_id)
@@ -303,7 +372,9 @@ class Runner:
         if msg_id is not None:
             try:
                 await self.bot.edit_message_text(
-                    fx.user_id, msg_id, fx.text,
+                    fx.text,
+                    chat_id=fx.user_id,
+                    message_id=msg_id,
                     parse_mode="HTML", reply_markup=markup,
                 )
                 return
@@ -317,9 +388,11 @@ class Runner:
             )
             if player is not None:
                 player.night_msg_id = msg.message_id
-        except TelegramAPIError:
+        except TelegramForbiddenError:
             if player is not None:
                 player.pm_ok = False
+        except TelegramAPIError as e:
+            log.warning("pm edit failed user=%s: %s", fx.user_id, e)
 
     async def _mute(self, user_id: int, chat_id: int) -> None:
         until = int(time.time()) + 365 * 24 * 3600
@@ -349,6 +422,8 @@ class Runner:
             return kb.night_kb(state, kind, actor_seat)
         if kind == "hunter":
             return kb.hunter_kb(state)
+        if kind == "rematch":
+            return kb.rematch_kb(int(spec[1]))
         return None
 
     # ---------- finalize ----------
@@ -399,7 +474,10 @@ class Runner:
                 if won:
                     cs.wins += 1
                 if rating_enabled:
-                    cs.rating += deltas.get(p.user_id, 0)
+                    cs.rating = max(rating.RATING_FLOOR, cs.rating + deltas.get(p.user_id, 0))
+                mp = await session.get(repo.MatchPlayer, (state.match_id, p.seat))
+                if mp is not None:
+                    mp.rating_delta = deltas.get(p.user_id, 0) if rating_enabled else 0
 
             new_achs: dict[int, list[str]] = {}
             for p in state.players:
@@ -474,6 +552,8 @@ class Runner:
 
         if state.tournament_id is not None:
             await self._tournament_round_done(state)
+
+        self._drop_caches(state.match_id)
 
     async def _tournament_round_done(self, state: GameState) -> None:
         async with session_scope() as session:
